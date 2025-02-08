@@ -1,0 +1,407 @@
+---
+title: "Human-like AI Conversations: Giving a Voice to ChatGPT with Murf"
+publishedAt: "2023-03-10"
+summary: "Use OpenAI and Murf API to build a chatbot"
+---
+
+In November of 2022, ChatGPT took the world by storm. Yet it was missing one thing - a voice. In this post, I'll talk about how you can add a voice to your GPT responses using Murf's text-to-speech API.
+
+Murf AI is a [text-to-speech](https://murf.ai/text-to-speech) platform that lets you generate lifelike AI voiceovers from text in minutes. Apart from its online studio, Murf also offers an API that you can use to integrate Murf's versatile voice generation capabilities into your business logic. Adding a voice to your ChatGPT responses opens up a whole world of possibilities and lets you offer more features to your users.
+
+As seen in the video, we will build a web application that accepts a prompt from the user, generate a ChatGPT response, and then narrate that answer. The context of the conversation is maintained, and ChatGPT will answer accordingly. Behind the scenes, we will send the conversation to ChatGPT to generate a response and then send that response to Murf to get the voiceover.
+
+Link to final code: [Github Repo](https://github.com/devgeetech/chatgpt-murf)
+
+## Getting access to the APIs
+
+Before we can start building the app, we need access to the APIs of both OpenAI and Murf. OpenAI offers free credits, which are valid for 3 months. [Create a free account] (https://platform.openai.com/signup) on their website, and you will get API keys which you can use to call OpenAI APIs.
+
+To access Murf API, register your interest on Murf text to speech API's [landing page](https://murf.ai/text-to-speech-api). Murf's team will contact you, and you will receive your API keys. Check out [Murf API docs](https://murf.ai/api/docs/getting-access/) to learn more.
+
+## Setting up the web application
+
+We'll be using React, Vite, and TypeScript for the web application. We will need the openai npm package as well as axios as dependencies.
+
+```bash
+npm create vite@latest chatgpt-murf --template react-ts
+npm install openai axios
+```
+
+We can now create a `.env` file in the root of our project to store the API keys.
+
+```
+VITE_OPENAI_API_KEY=YOUR_OPENAI_KEY
+VITE_MURF_API_KEY=YOUR_MURF_KEY
+```
+
+## Integrating ChatGPT API
+
+The `openai` npm package gives us a straightforward way to access the ChatGPT API. We will create a `generateChatGPTResponse` function that we can invoke to generate a ChatGPT response easily.
+
+```typescript
+import { Configuration, OpenAIApi } from "openai";
+export type ChatGPTMessage = {
+  role: "system" | "user" | "assistant";
+  content: string;
+};
+type GenerateChatGPTResponseBody = {
+  messages: ChatGPTMessage[];
+};
+
+const configuration = new Configuration({
+  apiKey: import.meta.env.VITE_OPENAI_API_KEY as string,
+});
+
+const openai = new OpenAIApi(configuration);
+
+export async function generateChatGPTResponse({
+  messages,
+}: GenerateChatGPTResponseBody) {
+  const completion = await openai.createChatCompletion({
+    model: "gpt-3.5-turbo",
+    messages: messages,
+    max_tokens: 1000,
+  });
+
+  return completion;
+}
+```
+
+The API key stored in our `.env` file is used to set up the configuration of OpenAI API. The `createChatCompletion` method of the `openai` package is used to send the request. It requires the following parameters:
+
+- `model`: The model that should be used to generate the responses. We will choose the new `gpt-3.5-turbo` model, which powers ChatGPT and is OpenAI's most advanced language model (as of March 2023).
+
+- `messages`: OpenAI's ChatGPT dashboard gives us a good idea of how it works - the user types in prompts in the input field, and ChatGPT gives them an answer relevant to the entire conversation it had with the user. To keep the context intact, ChatGPT requires the whole conversation it had with the user to be sent with every new request. So `messages` is an array of objects which stores this conversation. It looks something like this:
+
+```json
+messages = [
+   {"role": "user", "content": "Which is the largest planet in the solar system?"},
+   {"role": "assistant", "content": "Jupiter is the largest planet in the Solar system"},
+   {"role": "user", "content": "How big is it compared to earth?"}
+]
+```
+
+- `max_tokens`: This optional parameter specifies the maximum number of tokens allowed for the generated answer.
+
+The ChatGPT API will give a response relevant to the `messages` array that we sent. The response will have the following format (example from OpenAI Docs):
+
+```json
+{
+  "id": "chatcmpl-123",
+  "object": "chat.completion",
+  "created": 1677652288,
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "\n\nHello there, how may I assist you today?"
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 9,
+    "completion_tokens": 12,
+    "total_tokens": 21
+  }
+}
+```
+
+More information can be found in [OpenAI docs](https://platform.openai.com/docs/guides/chat/introduction) and [API Reference](https://platform.openai.com/docs/api-reference/chat/create).
+
+## Integrating Murf API
+
+Murf provides multiple REST API endpoints that you can use to perform actions relating to voiceover generation. For the scope of this project, we just need the `/speech/generate-with-key` endpoint of Murf API. We will use `axios` to access the REST endpoint.
+
+```ts
+import axios from "axios";
+
+export type GenerateSpeechInput = {
+  voiceId: string;
+  text: string;
+  format: string;
+};
+
+export const api = axios.create({
+  baseURL: "https://api.murf.ai/v1",
+});
+
+export async function generateSpeechWithKey(data: GenerateSpeechInput) {
+  return api.post("/speech/generate-with-key", data, {
+    headers: {
+      "api-key": import.meta.env.VITE_MURF_API_KEY
+      "Content-Type": "application/json",
+    },
+  });
+}
+
+```
+
+The Murf API key is passed as a header to the request. The `/speech/generate-with-key` endpoint requires the following parameters:
+
+- `voiceId`: The voice you want to use to generate the voiceover. Use the `/speech/voices` endpoint of Murf API to access the complete list of voices you can use. Some examples are: "en-US-marcus" and "en-UK-gabriel".
+
+- `text`: The text that you want to convert to speech.
+
+- `format`: The format of the output audio file. This can be MP3, WAV, etc.
+
+Once a request is sent, Murf will generate the voiceover with the given text using the voice specified. A response in the following format will be received.
+
+```json
+{
+  "audioFile": "string",
+  "encodedAudio": "string",
+  "audioLengthInSeconds": 0,
+  "wordDurations": [
+    {
+      "word": "string",
+      "startMs": 0,
+      "endMs": 0
+    }
+  ],
+  "consumedCharacterCount": 0,
+  "remainingCharacterCount": 0
+}
+```
+
+The `audioFile` key will contain the URL to the generated audio file.
+
+## Building the UI
+
+Now that we have functions to access both OpenAI and Murf let's build the UI that will invoke these APIs. Let's take a look at what we're making:
+
+![Image description](https://dev-to-uploads.s3.amazonaws.com/uploads/articles/oaju5g1sbi3uozw1wkia.png)
+
+To keep things simple, we will create just 2 react components - `GPTQueryItem` and `GPTForm`.
+
+```tsx
+type GPTQueryItemProps = {
+  question: string;
+  gptResponseId: number;
+  handleAudioPlay: (gptResponseId: number) => void;
+  currentPlayingAudioId: number | undefined;
+};
+
+function GPTQueryItem({
+  question,
+  gptResponseId,
+  handleAudioPlay,
+  currentPlayingAudioId,
+}: GPTQueryItemProps) {
+  return (
+    <div className="gpt-query-item">
+      <div className="gpt-query-item__user">
+        <span className="material-symbols-outlined gpt-query-item__user__icon">
+          face
+        </span>
+        <div className="gpt-query-item__user__question">{question}</div>
+      </div>
+      <div className="gpt-query-item__gpt">
+        <span className="material-symbols-outlined gpt-query-item__gpt__icon">
+          smart_toy
+        </span>
+        <button
+          className="gpt-query-item__gpt__audio-button"
+          onClick={() => handleAudioPlay(gptResponseId)}
+        >
+          {currentPlayingAudioId === gptResponseId ? (
+            <span className="material-symbols-outlined gpt-query-item__gpt__audio-button__icon">
+              pause
+            </span>
+          ) : (
+            <span className="material-symbols-outlined gpt-query-item__gpt__audio-button__icon">
+              play_arrow
+            </span>
+          )}
+          <div className="gpt-query-item__gpt__audio-button__text">
+            {currentPlayingAudioId === gptResponseId ? "Pause" : "Play"}
+          </div>
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export default GPTQueryItem;
+```
+
+`GPTQueryItem` will contain the individual GPT Query cards we saw in the UI. It will include a question from the user and an audio play button that will play ChatGPT's answer to it.
+
+```tsx
+import { useState, useRef } from "react";
+import { generateChatGPTResponse, ChatGPTMessage } from "../../api/OpenAiAPI";
+import { generateSpeechWithKey, GenerateSpeechInput } from "../../api/MurfAPI";
+import GPTQueryItem from "../GPTQueryItem";
+import Spinner from "../Spinner";
+
+enum STATUS_TYPES {
+  IDLE,
+  LOADING,
+}
+
+type GPTQuery = {
+  question: string;
+  gptResponse: string;
+  gptResponseAudioUrl: string;
+};
+
+function GPTForm() {
+  const [prompt, setPrompt] = useState("");
+  const [status, setStatus] = useState(STATUS_TYPES.IDLE);
+  const [gptQueries, setGptQueries] = useState([] as GPTQuery[]);
+  const [currentAudioId, setCurrentAudioId] = useState(
+    undefined as number | undefined
+  );
+
+  const audioElementRef = useRef<HTMLAudioElement>(null);
+
+  function handlePromptChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setPrompt(e.target.value);
+  }
+
+  async function handlePromptSubmit() {
+    if (!prompt || prompt.trim() === "") return;
+
+    setStatus(STATUS_TYPES.LOADING);
+
+    const messagesList = [] as ChatGPTMessage[];
+    gptQueries.forEach((query) => {
+      messagesList.push(
+        {
+          role: "user",
+          content: query.question,
+        },
+        {
+          role: "assistant",
+          content: query.gptResponse,
+        }
+      );
+    });
+    messagesList.push({
+      role: "user",
+      content: prompt,
+    });
+
+    const gptRes = await generateChatGPTResponse({ messages: messagesList });
+
+    const murfPayload: GenerateSpeechInput = {
+      voiceId: "en-US-marcus",
+      format: "MP3",
+      text: gptRes.data.choices[0].message?.content as string,
+    };
+
+    const murfAudio = await generateSpeechWithKey(murfPayload);
+
+    setGptQueries([
+      ...gptQueries,
+      {
+        question: prompt,
+        gptResponse: gptRes.data.choices[0].message?.content as string,
+        gptResponseAudioUrl: murfAudio.data.audioFile,
+      },
+    ]);
+
+    setPrompt("");
+
+    setStatus(STATUS_TYPES.IDLE);
+  }
+
+  function handleAudioPlay(audioIdToPlay: number) {
+    if (currentAudioId === audioIdToPlay) {
+      audioElementRef.current?.pause();
+      setCurrentAudioId(undefined);
+    } else {
+      setCurrentAudioId(audioIdToPlay);
+      audioElementRef.current?.play();
+    }
+  }
+
+  function handleOnAudioPlayEnd() {
+    setCurrentAudioId(undefined);
+  }
+
+  return (
+    <div className="gpt-form">
+      <div className="gpt-form__heading">ChatGPT + Murf</div>
+      <div className="gpt-form__queries">
+        {gptQueries.length > 0 ? (
+          gptQueries?.map((gptQuery, index) => {
+            return (
+              <GPTQueryItem
+                key={`${gptQuery.question} + ${index}`}
+                question={gptQuery.question}
+                gptResponseId={index}
+                handleAudioPlay={handleAudioPlay}
+                currentPlayingAudioId={currentAudioId ?? undefined}
+              />
+            );
+          })
+        ) : (
+          <div className="gpt-form__queries__placeholder">
+            Start by asking a question
+          </div>
+        )}
+      </div>
+      <div className="gpt-form__user-input">
+        <input
+          onChange={handlePromptChange}
+          value={prompt}
+          disabled={status === STATUS_TYPES.LOADING}
+          className="gpt-form__user-input__actual"
+        />
+        <button
+          onClick={handlePromptSubmit}
+          disabled={status === STATUS_TYPES.LOADING}
+          className="gpt-form__user-input__button"
+        >
+          {status === STATUS_TYPES.LOADING ? (
+            <Spinner />
+          ) : (
+            <span className="material-symbols-outlined gpt-form__user-input__button__icon">
+              send
+            </span>
+          )}
+        </button>
+      </div>
+      <audio
+        autoPlay
+        ref={audioElementRef}
+        onEnded={handleOnAudioPlayEnd}
+        src={
+          currentAudioId !== undefined
+            ? gptQueries[currentAudioId].gptResponseAudioUrl
+            : undefined
+        }
+      />
+    </div>
+  );
+}
+
+export default GPTForm;
+```
+
+The `GPTForm` component will contain a list of `GPTQueryItem`s and an input field for the user to ask new queries.
+
+The latest prompt the user typed in the input field is stored in the `prompt` state variable. `gptQueries` is an array of objects that holds the conversation between the user and ChatGPT. As indicated by the `GPTQuery` type, an object in the `gptQueries` array will have the question asked by the user, ChatGPT's response to it, and the URL to the audio generated by Murf for that response. In the UI, we iterate over the `gptQueries` array and for each item, we display a corresponding `GPTQueryItem`.
+
+We will integrate the `generateChatGPTResponse` and `generateSpeechWithKey` functions in the `handlePromptSubmit` function.
+
+When the user submits a new prompt, the `handlePromptSubmt` function is invoked, and we iterate through the `gptQueries` state variable to populate the `messageList` variable. After that iteration, we push the user's latest prompt into the `messageList`. Now `messageList` contains the entire conversation and the user's new prompt.
+
+The `generateChatGPTResponse` function is then invoked with `messageList` sent as the value for the `messages` parameter. The response from `generateChatGPTResponse` is used to generate the payload for `generateSpeechWithKey`. The `voiceId` is hardcoded to "en-US-marcus"; You can use a different Murf voice if needed. Once the Murf API returns a response, the new query item - which includes the user question, the ChatGPT response, and the murf audio - is pushed to the `gptQueries` array.
+
+Now add a wee bit of [styling](https://github.com/devgeetech/chatgpt-murf/blob/main/src/App.css), and you've got yourself a ChatGPT bot that speaks.
+
+## Conclusion
+
+In this post, we saw how to build a basic chatbot using ChatGPT and Murf API. But the possibilities don't end there. If we use OpenAI's Whisper API, which is a speech-to-text service, we can convert this app to a full-fledged Alexa-like voice assistant (maybe the topic for another blog post).
+
+ChatGPT is not the only integration you can combine with Murf API; You can connect the API to any business logic that can invoke REST APIs. You can also try different Murf voices and see which works best for your use case. [Register your interest in Murf API](https://murf.ai/text-to-speech-api) and start building today!
+
+## Additional Resources
+
+1. [OpenAI Docs](https://platform.openai.com/docs/introduction)
+2. [Murf API Docs](https://murf.ai/api/docs/)
+3. [Project Github Repo](https://github.com/devgeetech/chatgpt-murf)
+4. [My twitter profile](https://twitter.com/joelgroy) 🥹
