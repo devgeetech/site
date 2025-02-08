@@ -1,7 +1,17 @@
 import Link from "next/link";
 import Image from "next/image";
 import { MDXRemote } from "next-mdx-remote/rsc";
-import { highlight } from "sugar-high";
+// This order of importing is important
+import Prism from "prismjs";
+import "prismjs/themes/prism-okaidia.css";
+import "prismjs/components/prism-python";
+import "prismjs/components/prism-javascript";
+import "prismjs/components/prism-jsx";
+import "prismjs/components/prism-typescript";
+import "prismjs/components/prism-tsx";
+import "prismjs/components/prism-rust";
+import "prismjs/components/prism-bash";
+import "prismjs/components/prism-json";
 import React from "react";
 
 function Table({ data }) {
@@ -49,7 +59,12 @@ function RoundedImage(props) {
 }
 
 function Code({ children, ...props }) {
-  let codeHTML = highlight(children);
+  const language = props.className?.replace("language-", "") || "plaintext";
+  const codeHTML = Prism.highlight(
+    children,
+    Prism.languages[language],
+    language
+  );
   return <code dangerouslySetInnerHTML={{ __html: codeHTML }} {...props} />;
 }
 
