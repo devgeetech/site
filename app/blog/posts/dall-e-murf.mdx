@@ -1,0 +1,348 @@
+---
+title: "Prompt to Video"
+publishedAt: "2023-11-07"
+summary: "Creating Dynamic Videos with GPT-4, DALL-E 3, and Murf API"
+---
+
+From a prompt to a full-blown video! In this post, we'll see how we can use OpenAI's GPT-4, DALL-E, and Murf's text-to-speech API to generate videos from simple prompts. We'll use Python and FastAPI for this project.
+
+[Source Code](https://github.com/devgeetech/ai-video-generator)
+
+## Overview
+
+We intend to create an API that accepts a prompt like "Documentary on penguins" and returns a video that looks something like this:
+
+[Example Video](https://github.com/devgeetech/ai-video-generator/assets/48852231/510a1142-9d95-4dc7-80b0-b5a3cabf66a6)
+
+[More Examples](https://github.com/devgeetech/ai-video-generator/blob/master/examples/examples.md)
+
+Behind the scenes, after the API receives a prompt, It is sent to GPT-4, which then creates a script for this prompt. This "script" is a JSON array of objects. Each of its objects contains the following keys:
+
+- `text`: one sentence of the script
+- `imagePrompt`: a prompt for that sentence, that can be sent to DALL-E for image generation
+- `voiceId`: the Murf voice id to use for this sentence
+
+In short, we're passing the response from one OpenAI service to another.
+
+> AI tells AI what to do.
+
+A `Clip` is generated for each sentence. The `imagePrompt` is sent to DALL-E to generate the image to show, and the `text` and `voiceId` is sent to Murf API to generate the voiceover. In the end, these clips are stitched together to form the final video.
+
+Now, we'll look at the actual code of the project:
+
+### Setting up FastAPI
+
+You don't need to use FastAPI for this project, but I'll add it anyway so that we can expose this service at an endpoint. After you've set up your Python virtual environment, run the following code to install fastapi:
+
+```bash
+pip install "fastapi[all]"
+```
+
+Create an `app` folder in your root folder, and inside it, a `main.py` file.
+
+```python
+# app/main.py
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("/")
+def get_root():
+    return {"message": "Hello World"}
+```
+
+## Setting up your Environment
+
+Before we set up the OpenAI client, let us set up the environment variables first. Create a `.env` file at the root of your project and add your OpenAI api-key to it.
+
+```env
+OPEN_AI_API_KEY=your_key
+```
+
+We'll use the `BaseSettings` class from `pydantic` to handle environment variables. Create a `config.py` file in your app folder.
+
+```python
+# app/config.py
+from pydantic_settings import BaseSettings
+
+class Settings(BaseSettings):
+    open_ai_api_key: str
+
+    class Config:
+        env_file = ".env"
+
+settings = Settings()
+```
+
+## Setting up OpenAI
+
+Install the python library provided by OpenAI by running this:
+
+```bash
+pip install openai
+```
+
+We'll define all logic relating to OpenAI in an `openai.py` file in the app folder.
+
+```py
+from openai import OpenAI
+from .config import settings
+
+client = OpenAI(api_key=settings.open_ai_api_key)
+
+def get_open_ai_client():
+    return client
+```
+
+Now, we have all the basic requirements for accessing the features provided by OpenAI's API.
+
+The first OpenAI service that we need to access is GPT-4. We need to use GPT-4 to create our "script" for us. We'll use the "json_object" response format to make sure the response given by GPT-4 is always JSON. Furthermore, we'll define a system prompt that tells GPT the structure of the JSON object that we require. We'll ignore `voiceId` for now.
+
+```python
+# app/openai.py
+import json
+
+# ...
+
+def get_script(prompt=str):
+    res = client.chat.completions.create(
+        model="gpt-4-1106-preview",
+        response_format={"type": "json_object"},
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an automated system that helps generate 10-second videos. The user will provide a prompt, based on which, you will return a JSON array of objects named script. Each sentence of the script will be an object in the array. The object will have the following attributes. text - the sentence of the script. imagePrompt - a prompt that can be sent to DALL-E to generate the perfect, photorealistic image for the given sentence that also aligns with the overall context of the video; the image should have little or no text in it. ",
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+    )
+    json_str = res.choices[0].message.content
+    return json.loads(json_str)
+```
+
+Now that we have the code to generate the script, let's see how to set up DALL-E 3.
+
+```python
+# app/openai.py
+def get_image(prompt=str):
+    response = client.images.generate(
+        model="dall-e-3",
+        prompt=prompt,
+        size="1024x1024",
+        quality="standard",
+        n=1,
+    )
+    image_url = response.data[0].url
+    return image_url
+```
+
+The above function will return 1024x1024 images based on the prompt supplied. If you don't want to burn through your OpenAI credits, I'd recommend using the "dall-e-2" model with 256x256 resolution.
+
+## Setting up Murf API
+
+Murf provides a simple text-to-speech endpoint that is very straightforward to set up (Disclaimer: I work for murf.ai).
+
+Follow [these instructions](https://murf.ai/api/docs/getting-access) to know how to get access to Murf API.
+
+> Alternatively, you can use OpenAI's TTS service.
+
+Once you have your Murf api-key, define it in your `.env` file and your `config.py` file.
+
+```python
+# app/murf.py
+
+import requests
+import json
+from .config import settings
+
+
+def get_voiceover_url(text=str, voice_id=str):
+    url = "https://api.murf.ai/v1/speech/generate-with-key"
+    payload = json.dumps(
+        {
+            "voiceId": voice_id,
+            "text": text,
+        }
+    )
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "api-key": settings.murf_ai_api_key,
+    }
+    response = requests.request("POST", url, headers=headers, data=payload)
+    return response.json()["audioFile"]
+```
+
+For a given `text` and `voiceId`, this function will generate the voice-over and return the URL to the generated audio file.
+
+## Choosing the right voice
+
+We would want GPT to decide what voice to use for the video. For example, GPT should consider a funny young adult voice for something like an Ad, while for a documentary, it should choose a serious voice.
+We'll add this logic in our system prompt sent to GPT-4 while generating the script.
+
+```python
+# app/openai.py
+
+res = client.chat.completions.create(
+        # ...
+        messages=[
+            {
+                "role": "system",
+                "content": "You are an automated system that helps generate 8-second videos. The user will provide a prompt, based on which, you will return a JSON array of objects named script. Each sentence of the script will be an object in the array. The object will have the following attributes. text - the sentence of the script. imagePrompt - a prompt that can be sent to DALL-E to generate the perfect, photorealistic image for the given sentence that also aligns with the overall context of the video; the image should have little or no text in it. voiceId - a voice id that will be used by a TTS service; Only one voice should be used per video; For documentary videos, use en-UK-gabriel; for promo, ad-like videos, or any video with happy vibes, use en-UK-reggie for British accent or en-US-caleb for American accent; for informational videos like tutorials or lessons, use en-UK-hazel or en-US-miles; for other generic or general videos, use en-US-miles.",
+            },
+            # ...
+        ],
+    )
+```
+
+In the prompt, we've defined what voiceId to use in what scenario. (If you are a Prompt Engineer and if the above prompt makes your skin crawl, know that I do understand how you feel 🥲. Feel free to @ me on Twitter. ahem X)
+
+From the code that we've written till now, we should be able to generate a "script" array that looks something like this:
+
+```json
+"script": [
+      {
+        "text": "The Sahara Desert, a vast sea of sand, whispers the secrets of a millennia.",
+        "imagePrompt": "Endless golden sands of the Sahara Desert under a clear blue sky",
+        "voiceId": "en-UK-gabriel"
+      },
+      {
+        "text": "Its dunes, shaped by relentless winds, tell tales of ancient caravans.",
+        "imagePrompt": "Wind-sculpted sand dunes in the Sahara Desert with trails left by a caravan",
+        "voiceId": "en-UK-gabriel"
+      },
+      {
+        "text": "Once a fertile oasis, the Sahara's climate shift transformed it into an arid wonderland.",
+        "imagePrompt": "Historical transition illustration of a fertile Sahara oasis becoming a desert",
+        "voiceId": "en-UK-gabriel"
+      },
+      {
+        "text": "Only the hardiest of lives, like the Tuareg nomads, dare call it home.",
+        "imagePrompt": "Tuareg nomads traveling across the Sahara Desert",
+        "voiceId": "en-UK-gabriel"
+      }
+    ]
+```
+
+Using the `get_image` and `get_voiceover_url` functions, we should be able to get the image and audio URLs. With that data, we can create an array of media:
+
+```json
+[
+  { "audioUrl": "link_to_audio.mp3", "imageUrl": "link_to_image.png" },
+  { "audioUrl": "link_to_audio.mp3", "imageUrl": "link_to_image.png" },
+  { "audioUrl": "link_to_audio.mp3", "imageUrl": "link_to_image.png" }
+]
+```
+
+## Creating the Final Video
+
+Given the media list, we need to download each of those images and audio files and then stitch them together to create the final video. For this, we'll use `moviepy`
+
+```bash
+pip install moviepy
+```
+
+```python
+# app/moviepy.py
+
+import requests
+from moviepy.editor import (
+    ImageClip,
+    AudioFileClip,
+    concatenate_videoclips,
+)
+from fastapi.responses import FileResponse
+
+
+def download_file(url, local_filename):
+    with requests.get(url, stream=True) as r:
+        r.raise_for_status()
+        with open(local_filename, "wb") as f:
+            for chunk in r.iter_content(chunk_size=8192):
+                f.write(chunk)
+    return local_filename
+
+
+def get_final_video(data_list):
+    video_clips = []
+    counter = 0
+
+    for data in data_list:
+        audio_url = data["audioUrl"]
+        image_url = data["imageUrl"]
+
+        image_path = download_file(image_url, f"image_{counter}.png")
+        audio_path = download_file(audio_url, f"audio_{counter}.wav")
+
+        audio_clip = AudioFileClip(audio_path)
+
+        video_clip = ImageClip(image_path, duration=(int(audio_clip.duration) + 1))
+
+        video_clip = video_clip.set_audio(audio_clip)
+
+        video_clips.append(video_clip)
+
+        counter += 1
+
+    final_video = concatenate_videoclips(video_clips)
+
+    output_path = "output_video.mp4"
+    final_video.write_videofile(output_path, fps=24, codec="libx264")
+
+    final_video.close()
+    return FileResponse(output_path, media_type="video/mp4")
+
+```
+
+In the above code, we downloaded each media file and created instances of `AudioFileClip` and `ImageClip`. Each image is set to have a duration equal to the duration of the associated audio but with an additional delay of 1 second. The clips are concatenated into `final_video` and are saved locally. We use `FileResponse` from fastapi to return the video in the API endpoint.
+
+> This example uses local storage for storing the temporary media files and the final output. In production, you'd want to use an object storage like AWS S3.
+
+## Bringing it all together
+
+We'll now define a `/generate-video` endpoint to let users use our service. This endpoint will accept a `prompt` parameter in its request body, which will then be used to create the script.
+
+```python
+# app/schemas.py
+from pydantic import BaseModel
+
+# a very basic schema to define the payload type
+class GenerateVideoPayload(BaseModel):
+    prompt: str
+
+```
+
+```python
+# app/main.py
+
+from .openai import get_script, get_image
+from .murf import get_voiceover_url
+from .moviepy import get_final_video
+from . import schemas
+
+app = FastAPI()
+
+# ...
+
+@app.get("/generate-video")
+def get_ai_video(payload: schemas.GenerateVideoPayload):
+    script = get_script(prompt=payload.prompt)
+    script_arr = script["script"]
+
+    data_list = []
+
+    for item in script_arr:
+        image_url = get_image(item["imagePrompt"])
+        audio_url = get_voiceover_url(item["text"], item["voiceId"])
+        data_list.append({"imageUrl": image_url, "audioUrl": audio_url})
+
+    res = get_final_video(data_list)
+    return res
+```
+
+That's it. We've created an API that makes awesome videos from simple text prompts.
+
+We have ignored many things like error handling in this post. Do consider them making your own products. Play around with the prompt and try different voices to see what you can build with this.
